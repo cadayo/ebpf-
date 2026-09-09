@@ -78,20 +78,34 @@ start() {
 stop() {
     echo "[+] 正在停止 sing-box..."
     su -c "
-        # 1. 如果有 PID 文件，尝试发送正常退出信号
+        # 1. 尝试正常结束进程，让 sing-box 自己触发网络和路由清理逻辑
         if [ -f '$PID_FILE' ]; then
             PID=\$(cat '$PID_FILE')
-            kill \$PID 2>/dev/null
+            if kill -0 \$PID 2>/dev/null; then
+                kill -15 \$PID 2>/dev/null  # 发送 SIGTERM (15) 优雅退出信号
+                echo '[*] 已发送停止信号，等待 sing-box 清理路由规则与网卡...'
+                
+                # 循环等待，最多等 5 秒，给它充足的清理时间
+                for i in 1 2 3 4 5; do
+                    if ! kill -0 \$PID 2>/dev/null; then
+                        break
+                    fi
+                    sleep 1
+                done
+            fi
             rm -f '$PID_FILE'
         fi
-        
-        # 2. 缓冲 1 秒，给 sing-box 足够的时间清理 TUN 网卡和路由规则
-        sleep 1
-        
-        # 3. 暴力兜底清理：忽略 PID，直接按名称强制杀掉所有相关的存活进程
-        pkill -9 -f '$SINGBOX_BIN' 2>/dev/null
-        # 部分 Android 环境 pkill 失效时，用 killall 作为第二层兜底
-        killall -9 sing-box 2>/dev/null
+
+        # 2. 如果 5 秒后进程仍在运行（卡死），再执行暴力清理兜底
+        if pgrep -f '$SINGBOX_BIN' > /dev/null 2>&1; then
+            echo '[-] 警告: 进程未能优雅退出，正在强制结束...'
+            pkill -9 -f '$SINGBOX_BIN' 2>/dev/null
+            killall -9 sing-box 2>/dev/null
+        fi
+
+        # 3. 还原系统的 IP 转发状态（恢复环境）
+        echo 0 > /proc/sys/net/ipv4/ip_forward 2>/dev/null
+        echo 0 > /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null
     "
     echo "[+] 停止完成。"
 }

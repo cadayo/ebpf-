@@ -11,7 +11,6 @@ LOG_FILE="$RUN_DIR/singbox_ebpf.log"
 PID_FILE="$RUN_DIR/singbox_ebpf.pid"
 # ================================================
 
-# 初始化运行时目录
 init_env() {
     if [ ! -d "$RUN_DIR" ]; then
         mkdir -p "$RUN_DIR"
@@ -22,13 +21,11 @@ start() {
     init_env
     echo "[+] 正在检查 eBPF 环境及配置文件语法..."
     
-    # 1. 检查本地文件是否存在
     if [ ! -f "$SINGBOX_BIN" ] || [ ! -f "$CONFIG_FILE" ]; then
         echo "[-] 错误: 找不到 sing-box 或配置文件！"
         exit 1
     fi
 
-    # 2. 以 root 权限挂载 bpf 并检查配置语法
     su -c "
         if [ ! -d '/sys/fs/bpf' ]; then
             mkdir -p /sys/fs/bpf
@@ -46,15 +43,12 @@ start() {
 
     echo "[+] 正在启动 sing-box (eBPF 模式)..."
     
-    # 3. 以 root 权限开启转发并在后台持久运行
     su -c "echo 1 > /proc/sys/net/ipv4/ip_forward && echo 1 > /proc/sys/net/ipv6/conf/all/forwarding && nohup '$SINGBOX_BIN' run -c '$CONFIG_FILE' > '$LOG_FILE' 2>&1 & echo \$! > '$PID_FILE'"
 
-    # 4. 稍等 2 秒检查进程是否存活
     sleep 2
     local is_running=0
     if [ -f "$PID_FILE" ]; then
-        local pid
-        pid=$(cat "$PID_FILE")
+        local pid=$(cat "$PID_FILE")
         if su -c "kill -0 $pid 2>/dev/null"; then
             is_running=1
         fi
@@ -69,21 +63,36 @@ start() {
 }
 
 stop() {
-    echo "[+] 正在停止 sing-box (eBPF)..."
+    echo "[+] 正在停止 sing-box..."
     su -c "
-        # 1. 尝试通过 PID 发送正常退出信号 (SIGTERM)
+        # 1. 尝试正常结束进程，让 sing-box 自己触发网络和路由清理逻辑
         if [ -f '$PID_FILE' ]; then
             PID=\$(cat '$PID_FILE')
-            kill \$PID 2>/dev/null
+            if kill -0 \$PID 2>/dev/null; then
+                kill -15 \$PID 2>/dev/null  # 发送 SIGTERM (15) 优雅退出信号
+                echo '[*] 已发送停止信号，等待 sing-box 清理路由规则与网卡...'
+                
+                # 循环等待，最多等 5 秒，给它充足的清理时间
+                for i in 1 2 3 4 5; do
+                    if ! kill -0 \$PID 2>/dev/null; then
+                        break
+                    fi
+                    sleep 1
+                done
+            fi
             rm -f '$PID_FILE'
         fi
 
-        # 2. 缓冲 1 秒：给 eBPF 留出从内核卸载挂载点 (cgroup/tc) 的时间
-        sleep 1
+        # 2. 如果 5 秒后进程仍在运行（卡死），再执行暴力清理兜底
+        if pgrep -f '$SINGBOX_BIN' > /dev/null 2>&1; then
+            echo '[-] 警告: 进程未能优雅退出，正在强制结束...'
+            pkill -9 -f '$SINGBOX_BIN' 2>/dev/null
+            killall -9 sing-box 2>/dev/null
+        fi
 
-        # 3. 强制兜底：如果进程仍在运行，直接按路径与名称强杀
-        pkill -9 -f '$SINGBOX_BIN' 2>/dev/null
-        killall -9 sing-box 2>/dev/null
+        # 3. 还原系统的 IP 转发状态（恢复环境）
+        echo 0 > /proc/sys/net/ipv4/ip_forward 2>/dev/null
+        echo 0 > /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null
     "
     echo "[+] 停止完成。"
 }
