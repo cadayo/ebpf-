@@ -69,21 +69,20 @@ start() {
 }
 
 stop() {
-    echo "[+] 正在停止 sing-box..."
+    echo "[+] 正在停止 sing-box (eBPF)..."
     su -c "
-        # 1. 如果有 PID 文件，尝试发送正常退出信号
+        # 1. 尝试通过 PID 发送正常退出信号 (SIGTERM)
         if [ -f '$PID_FILE' ]; then
             PID=\$(cat '$PID_FILE')
             kill \$PID 2>/dev/null
             rm -f '$PID_FILE'
         fi
-        
-        # 2. 缓冲 1 秒，给 sing-box 足够的时间清理 TUN 网卡和路由规则
+
+        # 2. 缓冲 1 秒：给 eBPF 留出从内核卸载挂载点 (cgroup/tc) 的时间
         sleep 1
-        
-        # 3. 暴力兜底清理：忽略 PID，直接按名称强制杀掉所有相关的存活进程
+
+        # 3. 强制兜底：如果进程仍在运行，直接按路径与名称强杀
         pkill -9 -f '$SINGBOX_BIN' 2>/dev/null
-        # 部分 Android 环境 pkill 失效时，用 killall 作为第二层兜底
         killall -9 sing-box 2>/dev/null
     "
     echo "[+] 停止完成。"
