@@ -1,0 +1,115 @@
+#!/data/data/com.termux/files/usr/bin/sh
+
+# ==================== 配置区 ====================
+BASE_DIR="/data/data/com.termux/files/home/tun"
+SINGBOX_BIN="$BASE_DIR/sing-box"
+CONFIG_FILE="$BASE_DIR/config.json"
+TUN_NAME="wlan999" # 若检测不到网卡，建议改为 tun0
+
+# 统一管理运行时文件（日志与 PID）
+RUN_DIR="$BASE_DIR/run"
+LOG_FILE="$RUN_DIR/singbox_tun.log"
+PID_FILE="$RUN_DIR/singbox_tun.pid"
+# ================================================
+
+init_env() {
+    if [ ! -d "$RUN_DIR" ]; then
+        mkdir -p "$RUN_DIR"
+    fi
+}
+
+start() {
+    init_env
+    echo "[+] 正在检查配置文件语法..."
+    
+    if [ ! -f "$SINGBOX_BIN" ] || [ ! -f "$CONFIG_FILE" ]; then
+        echo "[-] 错误: 找不到 sing-box 或配置文件！"
+        exit 1
+    fi
+
+    # 1. 语法检查
+    su -c "'$SINGBOX_BIN' check -c '$CONFIG_FILE'"
+    if [ $? -ne 0 ]; then
+        echo "[-] 错误: 配置文件语法检查未通过，启动中止！"
+        exit 1
+    fi
+
+    echo "[+] 正在启动 sing-box (TUN 模式)..."
+    
+    # 2. 开启内核转发并在后台运行
+    su -c "echo 1 > /proc/sys/net/ipv4/ip_forward && echo 1 > /proc/sys/net/ipv6/conf/all/forwarding && nohup '$SINGBOX_BIN' run -c '$CONFIG_FILE' > '$LOG_FILE' 2>&1 & echo \$! > '$PID_FILE'"
+
+    if [ $? -ne 0 ]; then
+        echo "[-] 错误: Root 启动指令执行失败。"
+        exit 1
+    fi
+
+    echo "[*] 等待 TUN 接口 '$TUN_NAME' 就绪..."
+    local count=0
+    local found=0
+    
+    while [ "$count" -lt 5 ]; do
+        sleep 2
+        # 实时检测进程是否崩溃
+        if [ -f "$PID_FILE" ]; then
+            local pid=$(cat "$PID_FILE")
+            if ! su -c "kill -0 $pid 2>/dev/null"; then
+                echo "[-] 错误: sing-box 启动后异常退出，错误日志："
+                su -c "cat '$LOG_FILE'"
+                return 1
+            fi
+        fi
+
+        if su -c "ip link show $TUN_NAME" >/dev/null 2>&1; then
+            found=1
+            break
+        fi
+        count=$((count + 1))
+    done
+
+    if [ "$found" -eq 1 ]; then
+        echo "[+] sing-box 启动成功，虚拟网卡 '$TUN_NAME' 已就绪！"
+    else
+        echo "[-] 警告: 未在规定时间内检测到接口 '$TUN_NAME'，最新日志："
+        su -c "tail -n 20 '$LOG_FILE'"
+    fi
+}
+
+stop() {
+    echo "[+] 正在停止 sing-box..."
+    su -c "
+        # 1. 如果有 PID 文件，尝试发送正常退出信号
+        if [ -f '$PID_FILE' ]; then
+            PID=\$(cat '$PID_FILE')
+            kill \$PID 2>/dev/null
+            rm -f '$PID_FILE'
+        fi
+        
+        # 2. 缓冲 1 秒，给 sing-box 足够的时间清理 TUN 网卡和路由规则
+        sleep 1
+        
+        # 3. 暴力兜底清理：忽略 PID，直接按名称强制杀掉所有相关的存活进程
+        pkill -9 -f '$SINGBOX_BIN' 2>/dev/null
+        # 部分 Android 环境 pkill 失效时，用 killall 作为第二层兜底
+        killall -9 sing-box 2>/dev/null
+    "
+    echo "[+] 停止完成。"
+}
+
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart)
+        stop
+        sleep 1
+        start
+        ;;
+    *)
+        echo "使用方法: tun {start|stop|restart}"
+        exit 1
+        ;;
+esac
