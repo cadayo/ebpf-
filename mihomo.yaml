@@ -144,16 +144,16 @@ proxy-groups:
 
 rules:
   - DST-PORT,53,DNS_Hijack
-  - RULE-SET,private_ip,直连,no-resolve
+  - RULE-SET,private_ip,直连
   - RULE-SET,xiaomi_domain,🇨🇳国内节点
   - RULE-SET,tencent_domain,🇨🇳国内节点
   - RULE-SET,bilibili_domain,🇨🇳国内节点
   - RULE-SET,alibaba_domain,🇨🇳国内节点
   - RULE-SET,bytedance_domain,🇨🇳国内节点
   - RULE-SET,cn_domain,🇨🇳国内节点
-  - RULE-SET,cn_ip,🇨🇳国内节点,no-resolve
+  - RULE-SET,cn_ip,🇨🇳国内节点
   - RULE-SET,google_domain,🇺🇳国外节点
-  - RULE-SET,google_ip,🇺🇳国外节点,no-resolve
+  - RULE-SET,google_ip,🇺🇳国外节点
   - RULE-SET,telegram_domain,🇺🇳国外节点
   - RULE-SET,microsoft_domain,🇺🇳国外节点
   - RULE-SET,geolocation-!cn_domain,🇺🇳国外节点
