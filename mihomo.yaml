@@ -1,7 +1,7 @@
 mode: rule
 ipv6: false
 log-level: error
-allow-lan: true
+allow-lan: false
 unified-delay: true
 tcp-concurrent: true
 keep-alive-interval: 30
@@ -40,7 +40,7 @@ listeners:
     dns-mode: hijack
     udp-timeout: 300
     local:
-      ipv6-mode: auto
+      ipv6-mode: always
       state-capacity: 65536
 
 
