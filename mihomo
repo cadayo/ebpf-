@@ -1,0 +1,106 @@
+#!/data/data/com.termux/files/usr/bin/sh
+
+# ==================== 配置区 ====================
+BASE_DIR="/data/data/com.termux/files/home/mihomo"
+MIHOMO_BIN="$BASE_DIR/mihomo"
+CONFIG_FILE="$BASE_DIR/config.yaml"
+
+RUN_DIR="$BASE_DIR/run"
+LOG_FILE="$RUN_DIR/mihomo_ebpf.log"
+# ================================================
+
+init_env() {
+    if [ ! -d "$RUN_DIR" ]; then
+        mkdir -p "$RUN_DIR"
+    fi
+}
+
+start() {
+    init_env
+    echo "[+] 正在检查 eBPF 环境及 Mihomo 配置文件语法..."
+    
+    if [ ! -f "$MIHOMO_BIN" ] || [ ! -f "$CONFIG_FILE" ]; then
+        echo "[-] 错误: 找不到 mihomo 可执行文件或配置文件！"
+        exit 1
+    fi
+
+    # 1. 检查 BPF 挂载并使用 -t 测试 Mihomo 配置
+    su -c "
+        if [ ! -d '/sys/fs/bpf' ]; then
+            mkdir -p /sys/fs/bpf
+        fi
+        if ! mount | grep -q '/sys/fs/bpf'; then
+            mount -t bpf bpf /sys/fs/bpf 2>/dev/null
+        fi
+        '$MIHOMO_BIN' -t -d '$BASE_DIR' -f '$CONFIG_FILE'
+    "
+
+    if [ $? -ne 0 ]; then
+        echo "[-] 错误: 配置文件语法检查未通过或 eBPF 环境不可用，启动中止！"
+        exit 1
+    fi
+
+    echo "[+] 正在启动 mihomo (eBPF 模式)..."
+    
+    # 2. 开启内核转发并在后台运行
+    su -c "echo 1 > /proc/sys/net/ipv4/ip_forward && echo 1 > /proc/sys/net/ipv6/conf/all/forwarding && nohup '$MIHOMO_BIN' -d '$BASE_DIR' -f '$CONFIG_FILE' > '$LOG_FILE' 2>&1 &"
+
+    sleep 2
+    if su -c "pgrep -f '$MIHOMO_BIN'" >/dev/null 2>&1; then
+        echo "[+] mihomo (eBPF) 启动成功并正在运行！"
+    else
+        echo "[-] 错误: mihomo 启动后异常退出，错误日志："
+        su -c "cat '$LOG_FILE'"
+    fi
+}
+
+stop() {
+    echo "[+] 正在停止 mihomo (eBPF)..."
+    su -c "
+        # 1. 检查进程是否存在
+        if pgrep -f '$MIHOMO_BIN' >/dev/null 2>&1; then
+            echo '[*] 发送退出信号，等待 mihomo 从内核卸载 eBPF 规则...'
+            # 发送 SIGTERM (15) 优雅退出信号，触发 mihomo 自行清理 eBPF 规则
+            pkill -15 -f '$MIHOMO_BIN' 2>/dev/null
+            
+            # 2. 循环等待进程真正退出（最多等 8 秒）
+            count=0
+            while pgrep -f '$MIHOMO_BIN' >/dev/null 2>&1 && [ \$count -lt 8 ]; do
+                sleep 1
+                count=\$((count + 1))
+            done
+            
+            # 3. 超时未退出才强杀兜底，并强行解挂 BPF 文件系统
+            if pgrep -f '$MIHOMO_BIN' >/dev/null 2>&1; then
+                echo '[-] 警告: 进程超时未退出，强行结束并清理 eBPF 挂载...'
+                pkill -9 -f '$MIHOMO_BIN' 2>/dev/null
+                umount -f /sys/fs/bpf 2>/dev/null
+            fi
+        else
+            echo '[*] mihomo 未在运行。'
+        fi
+
+        # 4. 恢复 IP 转发状态
+        echo 0 > /proc/sys/net/ipv4/ip_forward 2>/dev/null
+        echo 0 > /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null
+    "
+    echo "[+] 停止完成，网络已恢复。"
+}
+
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart)
+        stop
+        sleep 1
+        start
+        ;;
+    *)
+        echo "使用方法: ebpf {start|stop|restart}"
+        exit 1
+        ;;
+esac
